@@ -1,0 +1,23 @@
+# 環境変数ファイル
+.env
+
+# Docker volumes
+postgres_data/
+pgadmin_data/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ログファイル
+*.log
+
+# テンポラリファイル
+tmp/
+temp/
