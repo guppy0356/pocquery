@@ -21,3 +21,6 @@ pgadmin_data/
 # テンポラリファイル
 tmp/
 temp/
+
+# 自動ロードされるテストデータ（テンプレートから生成）
+init-db/test-data.sql

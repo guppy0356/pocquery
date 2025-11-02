@@ -112,6 +112,52 @@ SELECT performance.log_query_execution(
 );
 ```
 
+## テストケース管理
+
+複数のテストケースを用意して、検証したい内容に応じて切り替えることができます。
+
+### テストケースの構成
+
+- `init-db/`: 自動的にロードされるディレクトリ
+  - `init.sql`: 基本的なパフォーマンス検証機能（常にロード）
+  - `test-data.sql`: 選択されたテストケース（自動生成、gitignore済み）
+- `init-db-templates/`: テストケースのテンプレート
+  - `nested-loop-test.sql`: Nested Loop検証用データ（users: 3件, orders: 10,000件）
+
+### 利用可能なテストケースの確認
+
+```bash
+./load-test.sh
+```
+
+### テストケースのロード
+
+```bash
+# 1. テストケースを選択してロード
+./load-test.sh nested-loop-test
+
+# 2. データベースをリセットして再起動
+docker compose down -v
+docker compose up -d
+```
+
+**注意**: テストケースを切り替える際は必ず `-v` フラグを使用してボリュームを削除してください。これにより古いデータが削除され、新しいテストデータで初期化されます。
+
+### 新しいテストケースの追加
+
+`init-db-templates/` ディレクトリに新しいSQLファイルを追加するだけです：
+
+```bash
+# 例: Hash Join検証用のテストケースを作成
+cat > init-db-templates/hash-join-test.sql << 'EOF'
+-- Hash Join 検証用テストデータ
+CREATE TABLE ...
+EOF
+
+# ロード
+./load-test.sh hash-join-test
+```
+
 ## パフォーマンス検証のヒント
 
 ### EXPLAIN ANALYZE の使用
