@@ -17,33 +17,23 @@ Nested Loop結合のパフォーマンス特性を検証するためのテスト
 - **インデックス**:
   - `users.id`: PRIMARY KEY
   - `orders.id`: PRIMARY KEY
-  - `orders.user_id`: INDEX (`idx_orders_user_id`)
+  - `orders.user_id`: **インデックスなし**（パフォーマンス改善の検証用）
 
 ## 検証内容
 
-このテストケースでは、以下の現象を確認できます：
+このテストケースでは、以下の現象を段階的に体験できます：
 
-1. **少数のデータを取得する場合**: インデックスが使用される
-2. **大量のデータを取得する場合**: Seq Scanが選択される（インデックスよりも効率的）
-3. データの偏りがクエリプランに与える影響
+1. **インデックスなし**: Seq Scanでの性能を確認
+2. **インデックス追加**: パフォーマンス改善を確認
+3. **データの偏り**: 少数/大量データでのクエリプランの違いを確認
 
-## 検証クエリ
+## 検証手順
 
-### 1. Bobのデータを取得（全体の80%）
+### ステップ1: インデックスなしの状態を確認
 
-```sql
-EXPLAIN ANALYZE
-SELECT u.name, o.order_date, o.amount
-FROM users u
-INNER JOIN orders o ON u.id = o.user_id
-WHERE u.id = 2;
-```
+まず、インデックスがない状態でクエリを実行します。
 
-**期待される結果:**
-- `orders` テーブルに対して **Seq Scan** が使用される
-- インデックスが存在しても、大量データの場合はSeq Scanの方が効率的
-
-### 2. Aliceのデータを取得（全体の10%）
+#### Aliceのデータを取得（全体の10%）
 
 ```sql
 EXPLAIN ANALYZE
@@ -53,11 +43,68 @@ INNER JOIN orders o ON u.id = o.user_id
 WHERE u.id = 1;
 ```
 
-**期待される結果:**
-- `orders` テーブルに対して **Bitmap Index Scan** が使用される
-- 少量データの場合はインデックスが効率的
+**結果:**
+- `orders` テーブルに対して **Seq Scan** が使用される
+- フィルタ条件で 9,000件を除外（Rows Removed by Filter）
+- 少量のデータを取得するのに全件スキャンが発生
 
-### 3. 全ユーザーのデータを取得
+#### Bobのデータを取得（全体の80%）
+
+```sql
+EXPLAIN ANALYZE
+SELECT u.name, o.order_date, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE u.id = 2;
+```
+
+**結果:**
+- こちらも **Seq Scan**
+- 大量のデータを取得する場合は、Seq Scanでも比較的効率的
+
+### ステップ2: インデックスを作成
+
+パフォーマンス改善のために、`orders.user_id` にインデックスを作成します：
+
+```sql
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+```
+
+### ステップ3: インデックス作成後の性能を確認
+
+#### Aliceのデータを再取得
+
+```sql
+EXPLAIN ANALYZE
+SELECT u.name, o.order_date, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE u.id = 1;
+```
+
+**期待される改善:**
+- `orders` テーブルに対して **Bitmap Index Scan** が使用される
+- Seq Scanと比較して大幅に高速化
+- 不要な行を読み飛ばすことができる
+
+#### Bobのデータを再取得
+
+```sql
+EXPLAIN ANALYZE
+SELECT u.name, o.order_date, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE u.id = 2;
+```
+
+**興味深い結果:**
+- インデックスが存在しても **Seq Scan** が選択される可能性が高い
+- 全体の80%のデータを取得する場合、インデックスを使うよりSeq Scanの方が効率的
+- PostgreSQLのオプティマイザがコストを計算して最適なプランを選択
+
+### ステップ4: 全ユーザーのデータを集計
+
+インデックスがある状態で、全ユーザーの集計クエリを実行します：
 
 ```sql
 EXPLAIN ANALYZE
@@ -68,7 +115,13 @@ GROUP BY u.name
 ORDER BY order_count DESC;
 ```
 
-### 4. インデックスの使用状況を確認
+**確認ポイント:**
+- 全件取得する場合の実行計画
+- Hash Join や Merge Join が使われる可能性
+
+### ステップ5: インデックスの使用状況を確認
+
+実際にインデックスが使われているか統計情報で確認します：
 
 ```sql
 SELECT
@@ -83,40 +136,21 @@ WHERE tablename IN ('users', 'orders')
 ORDER BY idx_scan DESC;
 ```
 
-## パフォーマンス改善の検証
+**確認ポイント:**
+- `idx_orders_user_id` の `index_scans` が増えているか
+- どのクエリでインデックスが使われたか
 
-### インデックスなしの場合との比較
+## さらなる最適化
 
-インデックスを削除して比較してみましょう：
+### カバリングインデックスで高速化
+
+よくアクセスするカラムを含むカバリングインデックスを作成します：
 
 ```sql
--- インデックスを削除
+-- 既存のインデックスを削除
 DROP INDEX IF EXISTS idx_orders_user_id;
 
--- Aliceのデータを取得（インデックスなし）
-EXPLAIN ANALYZE
-SELECT u.name, o.order_date, o.amount
-FROM users u
-INNER JOIN orders o ON u.id = o.user_id
-WHERE u.id = 1;
-
--- インデックスを再作成
-CREATE INDEX idx_orders_user_id ON orders(user_id);
-
--- 同じクエリを再実行（インデックスあり）
-EXPLAIN ANALYZE
-SELECT u.name, o.order_date, o.amount
-FROM users u
-INNER JOIN orders o ON u.id = o.user_id
-WHERE u.id = 1;
-```
-
-### カバリングインデックスでさらに最適化
-
-よくアクセスするカラムを含むカバリングインデックスを作成：
-
-```sql
--- 複合インデックス（カバリングインデックス）
+-- カバリングインデックスを作成
 CREATE INDEX idx_orders_user_id_covering ON orders(user_id) INCLUDE (order_date, amount);
 
 -- 効果を確認
@@ -128,14 +162,26 @@ WHERE u.id = 1;
 ```
 
 **期待される効果:**
-- Index-Only Scan が可能になり、ヒープアクセスが不要になる場合がある
+- Index-Only Scan が可能になる場合がある
+- ヒープアクセスが不要になり、さらに高速化
+
+### インデックスの削除（元に戻す）
+
+検証が終わったら、インデックスを削除して初期状態に戻せます：
+
+```sql
+DROP INDEX IF EXISTS idx_orders_user_id;
+DROP INDEX IF EXISTS idx_orders_user_id_covering;
+```
 
 ## 学習ポイント
 
-1. **インデックスは万能ではない**: 大量のデータを取得する場合、Seq Scanの方が効率的
-2. **選択性が重要**: データの偏りがクエリプランに大きく影響する
-3. **PostgreSQLのオプティマイザは賢い**: データ分布を考慮して最適なプランを選択
-4. **実行計画の確認が重要**: EXPLAIN ANALYZEで実際の動作を確認する
+1. **段階的な改善の重要性**: インデックスなしから始めることで、改善効果を体感できる
+2. **インデックスは万能ではない**: 大量のデータを取得する場合、Seq Scanの方が効率的
+3. **選択性が重要**: データの偏り（10% vs 80%）がクエリプランに大きく影響する
+4. **PostgreSQLのオプティマイザは賢い**: データ分布を考慮して最適なプランを選択
+5. **実行計画の確認が重要**: EXPLAIN ANALYZEで実際の動作を確認する
+6. **カバリングインデックス**: よくアクセスするカラムを含めることでさらに高速化
 
 ## 次のステップ
 
