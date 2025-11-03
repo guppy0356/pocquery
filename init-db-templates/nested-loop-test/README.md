@@ -126,13 +126,13 @@ ORDER BY order_count DESC;
 ```sql
 SELECT
     schemaname,
-    tablename,
-    indexname,
+    relname as tablename,
+    indexrelname as indexname,
     idx_scan as index_scans,
     idx_tup_read as tuples_read,
     idx_tup_fetch as tuples_fetched
 FROM pg_stat_user_indexes
-WHERE tablename IN ('users', 'orders')
+WHERE relname IN ('users', 'orders')
 ORDER BY idx_scan DESC;
 ```
 
