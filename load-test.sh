@@ -12,8 +12,10 @@ show_usage() {
     echo "Usage: ./load-test.sh <test-case>"
     echo ""
     echo "Available test cases:"
-    for file in "$TEMPLATES_DIR"/*.sql; do
-        basename "$file" .sql
+    for dir in "$TEMPLATES_DIR"/*/ ; do
+        if [ -d "$dir" ]; then
+            basename "$dir"
+        fi
     done
     exit 1
 }
@@ -24,13 +26,20 @@ if [ $# -eq 0 ]; then
 fi
 
 TEST_CASE=$1
-TEMPLATE_FILE="$TEMPLATES_DIR/${TEST_CASE}.sql"
+TEMPLATE_DIR="$TEMPLATES_DIR/${TEST_CASE}"
+TEMPLATE_FILE="$TEMPLATE_DIR/$TEST_FILE"
 
-# テンプレートファイルの存在確認
-if [ ! -f "$TEMPLATE_FILE" ]; then
+# テンプレートディレクトリの存在確認
+if [ ! -d "$TEMPLATE_DIR" ]; then
     echo "Error: Test case '$TEST_CASE' not found in $TEMPLATES_DIR/"
     echo ""
     show_usage
+fi
+
+# テンプレートファイルの存在確認
+if [ ! -f "$TEMPLATE_FILE" ]; then
+    echo "Error: $TEST_FILE not found in $TEMPLATE_DIR/"
+    exit 1
 fi
 
 # 既存のテストファイルを削除（もし存在すれば）
