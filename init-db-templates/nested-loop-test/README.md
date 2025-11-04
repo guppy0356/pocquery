@@ -102,6 +102,60 @@ WHERE u.id = 2;
 - 全体の80%のデータを取得する場合、インデックスを使うよりSeq Scanの方が効率的
 - PostgreSQLのオプティマイザがコストを計算して最適なプランを選択
 
+#### 📚 深掘り: Bitmap Scan の仕組み
+
+Aliceのクエリで使われた **Bitmap Index Scan** と **Bitmap Heap Scan** の動作を理解しましょう。
+
+実際の実行計画：
+```
+Nested Loop
+  ->  Index Scan using users_pkey on users u
+  ->  Bitmap Heap Scan on orders o              ← ステップ2
+        Recheck Cond: (user_id = 1)
+        Heap Blocks: exact=6                    ← 6ページ読んだ
+        ->  Bitmap Index Scan on idx_orders_user_id  ← ステップ1
+              Index Cond: (user_id = 1)
+```
+
+**2つのステップ:**
+
+**ステップ1: Bitmap Index Scan**
+- インデックスをスキャンして、条件に合う行の番号を集める
+- 「行100, 行101, 行250, 行500, ...」というリストを作成（ビットマップ）
+- まだ実際のデータは取得していない
+
+**ステップ2: Bitmap Heap Scan**
+- ビットマップの行番号を**ページ単位**でグループ化
+- ヒープ（テーブル本体）から効率的にデータを取得
+- `Heap Blocks: exact=6` = 6ページを読み取った
+
+**なぜページ単位なのか？**
+
+PostgreSQLは**1ページ = 8KB**のブロック単位でデータを読みます。これはディスクの仕組みによる制約です：
+
+```
+❌ できないこと: 「行100の100バイトだけ読む」
+✅ 実際の動作: 「ページ1全体（8KB）を読んで、その中から行100を取り出す」
+```
+
+**Bitmapの効率化:**
+
+```
+非効率な方法（1件ずつ）:
+1. ページ1を読む（行100取得）
+2. ページ7を読む（行500取得）
+3. ページ1を読む（行101取得）← 同じページをまた読む！
+→ 同じページを何度も読む無駄が発生
+
+効率的な方法（Bitmap使用）:
+1. 必要な行番号を全部集める: [100, 500, 101, 250, ...]
+2. ページ単位でグループ化: ページ1=[100,101,...], ページ7=[500,...]
+3. 各ページを1回だけ読む
+→ ディスクアクセスが大幅に削減！
+```
+
+今回のケースでは、1,000件のデータがたった6ページに収まっており、Bitmapを使うことで各ページを1回だけ読めば済みます。
+
 ### ステップ4: 全ユーザーのデータを集計
 
 インデックスがある状態で、全ユーザーの集計クエリを実行します：
@@ -139,6 +193,46 @@ ORDER BY idx_scan DESC;
 **確認ポイント:**
 - `idx_orders_user_id` の `index_scans` が増えているか
 - どのクエリでインデックスが使われたか
+
+#### 📊 結果の見方
+
+実際の出力例：
+```
+schemaname | tablename | indexname              | index_scans | tuples_read | tuples_fetched
+-----------+-----------+------------------------+-------------+-------------+----------------
+public     | users     | users_pkey             | 5           | 5           | 5
+public     | orders    | idx_orders_user_id     | 1           | 1000        | 0
+public     | orders    | orders_pkey            | 0           | 0           | 0
+```
+
+**各カラムの意味:**
+
+| カラム | 意味 | 例の解釈 |
+|--------|------|---------|
+| **index_scans** | インデックススキャン回数 | `idx_orders_user_id`は1回だけ使われた |
+| **tuples_read** | インデックスから読んだエントリ数 | 1,000件読んだ |
+| **tuples_fetched** | Index Scanでヒープから取得した行数 | 0 = Bitmap Scanなので別統計 |
+
+**なぜ idx_orders_user_id が1回だけ？**
+
+検証で実行したクエリ：
+1. ✅ Alice (user_id=1, 10%): **インデックス使用** → index_scans: 1
+2. ❌ Bob (user_id=2, 80%): **Seq Scan** → インデックス使わず
+3. ❌ 集計クエリ（全件）: **Hash Join + Seq Scan** → インデックス使わず
+
+**重要な発見:**
+- インデックスが存在しても、常に使われるわけではない
+- データの選択性（10% vs 80%）がクエリプランを大きく左右する
+- オプティマイザは賢くコストを計算している
+
+**tuples_read vs tuples_fetched の違い:**
+
+- **tuples_read**: インデックスから読んだエントリ数（常にカウント）
+- **tuples_fetched**: Index Scanで直接ヒープから取得した行数
+  - Bitmap Index Scanの場合は0（別の統計でカウント）
+  - Index Only Scanの場合も0（ヒープアクセスなし）
+
+今回は `tuples_read=1000, tuples_fetched=0` なので、Bitmap Scanが使われたことが分かります。
 
 ## さらなる最適化
 
