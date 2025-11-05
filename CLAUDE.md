@@ -8,6 +8,7 @@
 1. まず「テストケース追加時の要件定義」セクションを参照
 2. ユーザーに必須項目（テーマ、テーブル構成、データ量、検証クエリ）を質問
 3. 回答を得てから「新しいテストケースの追加手順」に従って実装
+4. **⚠️ 重要**: READMEの全ステップを実際に実行して検証（詳細はステップ5参照）
 
 **プロンプト例:**
 ```
@@ -20,6 +21,11 @@
 4. 検証クエリ: どんなクエリを実行しますか？
 ...
 ```
+
+**検証の重要性:**
+- 「クエリが実行できた」だけでは不十分
+- EXPLAIN ANALYZEで期待したパフォーマンス特性が再現できることを確認
+- インデックスが効く/効かない、Rows Removed by Filterの値など、すべて実測値で検証
 
 詳細は「テストケース追加時の要件定義」セクションを参照してください。
 
@@ -336,7 +342,11 @@ CREATE INDEX idx_xxx ON table(column);
 - 実行時間: Xms → Yms（Z倍高速化）
 ```
 
-### 5. テスト
+### 5. 徹底的なテストと検証（重要！）
+
+**⚠️ 重要: テストケースを作成したら、必ずREADMEの全ステップを実際に実行して検証してください。**
+
+#### 5.1 データ投入の確認
 
 ```bash
 # テストケースをロード
@@ -346,11 +356,131 @@ CREATE INDEX idx_xxx ON table(column);
 docker compose down -v
 docker compose up -d
 
-# READMEの手順を実際に実行して確認
-docker exec -it pocquery_postgres psql -U postgres -d pocquery
+# データが正しく投入されたか確認
+docker exec pocquery_postgres psql -U postgres -d pocquery -c "
+SELECT
+    schemaname,
+    tablename,
+    n_live_tup as row_count
+FROM pg_stat_user_tables
+ORDER BY tablename;
+"
+
+# データ分布を確認（例: カテゴリ別の件数）
+docker exec pocquery_postgres psql -U postgres -d pocquery -c "
+SELECT
+    category_id,
+    COUNT(*)
+FROM your_table
+GROUP BY category_id
+ORDER BY category_id
+LIMIT 10;
+"
 ```
 
-### 6. README.mdを更新
+#### 5.2 READMEの各ステップを実行
+
+**READMEに記載した全てのクエリを実行し、以下を確認:**
+
+1. **実行計画が期待通りか**
+   ```bash
+   docker exec pocquery_postgres psql -U postgres -d pocquery -c "
+   EXPLAIN ANALYZE
+   [READMEのクエリ]
+   "
+   ```
+
+2. **確認すべきポイント:**
+   - ✅ 正しいスキャン方法が使われているか（Seq Scan, Index Scan, Bitmap Scanなど）
+   - ✅ `Rows Removed by Filter` の値は期待通りか
+   - ✅ `actual rows` の値は正しいか
+   - ✅ 実行時間は妥当か
+   - ✅ インデックスが効いているか（作成後）
+
+3. **よくある問題:**
+   - ❌ インデックスを作成したのに使われていない
+     → データ量や選択性を見直す
+   - ❌ 期待したフィルタが発生していない
+     → クエリやデータ設計を修正
+   - ❌ 実行時間の改善が見られない
+     → インデックスの設計やデータ分布を見直す
+
+#### 5.3 期待と現実のギャップを記録
+
+実際の実行結果をREADMEに反映：
+
+```markdown
+**期待される結果:**
+- Seq Scan が使われる
+- Rows Removed by Filter: 約80,000件
+- 実行時間: 10-20ms程度
+
+**実際の結果（検証済み）:**
+```
+[実際のEXPLAIN ANALYZEの出力を貼る]
+```
+```
+
+#### 5.4 全ステップの動作確認
+
+READMEに記載した全てのステップを順番に実行：
+
+```bash
+# ステップ1: インデックスなし
+[クエリ実行]
+→ 結果を記録
+
+# ステップ2: インデックス作成
+docker exec pocquery_postgres psql -U postgres -d pocquery -c "
+CREATE INDEX idx_xxx ON table(column);
+"
+
+# ステップ3: 改善を確認
+[同じクエリ実行]
+→ 改善されたか確認
+
+# ステップ4以降も同様に...
+```
+
+#### 5.5 失敗したケースの対処
+
+期待通りの結果が得られない場合：
+
+1. **データ設計を見直す**
+   - データ量が少なすぎる/多すぎる
+   - データの偏りが不十分
+
+2. **クエリを調整**
+   - WHERE句の条件を変える
+   - JOINの順序を見直す
+
+3. **READMEの説明を修正**
+   - 「期待される結果」を実際の結果に合わせる
+   - なぜそうなるかの説明を追加
+
+4. **test-data.sqlを修正**
+   - データ量を調整
+   - 分布を変更
+
+**⚠️ 注意: 「動作確認」は「クエリが実行できた」ではなく、「期待したパフォーマンス特性が再現できた」ことを意味します。**
+
+### 6. TodoListで進捗管理（推奨）
+
+テストケース追加時は、TodoWriteツールでタスクを管理すると漏れがありません：
+
+```
+[
+  {"content": "テーブル定義とデータ投入SQL作成", "status": "completed"},
+  {"content": "README.md作成", "status": "completed"},
+  {"content": "データ投入確認", "status": "completed"},
+  {"content": "ステップ1検証（インデックスなし）", "status": "in_progress"},
+  {"content": "ステップ2検証（WHERE絞り込み）", "status": "pending"},
+  {"content": "ステップ3検証（インデックス追加）", "status": "pending"},
+  {"content": "全ステップ完了確認", "status": "pending"}
+]
+```
+
+### 7. メインREADME.mdを更新
 
 メインのREADME.mdの「利用可能なテストケース」セクションに追加：
 
@@ -360,7 +490,7 @@ docker exec -it pocquery_postgres psql -U postgres -d pocquery
   - 学習ポイント2
 ```
 
-### 7. コミット
+### 8. コミット
 
 ```bash
 git add init-db-templates/[test-name]/
