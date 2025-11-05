@@ -178,6 +178,47 @@ EOF
 ./load-test.sh hash-join-test
 ```
 
+### Claudeを使ったテストケース追加
+
+Claude（AI）に新しいテストケースを追加してもらう場合、以下のプロンプトを参考にしてください。
+
+#### サンプルプロンプト
+
+```
+CLAUDE.mdを読んで、新しいテストケースを追加してください。
+
+【必須情報】
+1. テーマ: ECサイトの売上集計でのWHERE vs HAVING比較
+
+2. テーブル構成:
+   - shops (id, name)
+   - orders (id, shop_id, shipped_day, customer_id)
+   - items (id, order_id, product_name, price)
+
+3. データ量:
+   - shops: 100店舗
+   - orders: 100,000件（shipped_dayは1年分、直近1ヶ月に50%集中）
+   - items: 500,000件（1注文あたり平均5アイテム）
+
+4. 検証クエリ:
+   店舗ごとの日別売上を計算
+   - WHEREで期間絞り込み（直近1週間）vs 全期間集計
+   - Rows Removed by Filterの確認
+
+5. 改善の流れ:
+   - ステップ1: 全期間で集計（非効率）
+   - ステップ2: WHEREで期間絞り込み（効率的）
+   - ステップ3: shipped_dayにインデックス追加（更に改善）
+   - ステップ4: HAVINGで売上額絞り込み（集計後フィルタ）
+
+6. 学習ゴール:
+   - WHERE（集計前）とHAVING（集計後）のフィルタタイミングの違い
+   - Rows Removed by Filterの意味
+   - インデックスが効くタイミング
+```
+
+詳細は[CLAUDE.md](CLAUDE.md)の「テストケース追加時の要件定義」セクションを参照してください。
+
 ## パフォーマンス検証のヒント
 
 ### EXPLAIN ANALYZE の使用
