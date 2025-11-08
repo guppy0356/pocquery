@@ -154,6 +154,11 @@ cat init-db-templates/nested-loop-test/README.md
   - データの偏りがクエリプランに与える影響
   - インデックスの選択性による実行計画の違い
 
+- **[groupby-filter-test](init-db-templates/groupby-filter-test/README.md)**: GROUP BYにおけるWHERE vs HAVINGの比較
+  - 集計前フィルタ（WHERE）と集計後フィルタ（HAVING）のパフォーマンス差（2.3倍）
+  - GROUP BY結果にインデックスが効かない理由
+  - 選択率によるSeq Scan vs Index Scanの使い分け
+
 ### 新しいテストケースの追加
 
 `init-db-templates/` ディレクトリに新しいディレクトリを作成します：
