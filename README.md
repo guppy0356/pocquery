@@ -159,6 +159,11 @@ cat init-db-templates/nested-loop-test/README.md
   - GROUP BY結果にインデックスが効かない理由
   - 選択率によるSeq Scan vs Index Scanの使い分け
 
+- **[composite-index-test](init-db-templates/composite-index-test/README.md)**: 複合インデックスによるSort Aggregate vs Hash Aggregate
+  - 複合インデックスでGroupAggregate（Sort Aggregate）を実現
+  - カラム順序がGROUP BY/ORDER BYに与える影響
+  - Bitmap Scan vs Index Scanの使い分け
+
 ### 新しいテストケースの追加
 
 `init-db-templates/` ディレクトリに新しいディレクトリを作成します：
