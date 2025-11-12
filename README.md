@@ -164,6 +164,11 @@ cat init-db-templates/nested-loop-test/README.md
   - カラム順序がGROUP BY/ORDER BYに与える影響
   - Bitmap Scan vs Index Scanの使い分け
 
+- **[blob-column-test](init-db-templates/blob-column-test/README.md)**: BLOBカラムがSELECTパフォーマンスに与える影響
+  - SELECT * によるBLOB取得の非効率性（約80倍のデータ転送量）
+  - 必要なカラムのみを選択する重要性
+  - テーブル設計におけるBLOB分離のベストプラクティス
+
 ### 新しいテストケースの追加
 
 `init-db-templates/` ディレクトリに新しいディレクトリを作成します：
