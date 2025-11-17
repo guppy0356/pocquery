@@ -321,33 +321,173 @@ Sort  (cost=... rows=... ...)
 
 この順序では、WHERE句`shipped_date >= '2025-01-15'`で効率的に絞り込めません。各shop_idごとに全期間をスキャンする必要があり、インデックスの効果が薄れます。そのため、PostgreSQLはSeq Scanを選択します。
 
-### ステップ6: 正しいインデックスに戻す
+### ステップ6: 両方のカラムに単一インデックス（複合インデックスとの比較）
+
+複合インデックス`(shipped_date, shop_id)`の代わりに、shipped_dateとshop_idに別々のインデックスを作成した場合の挙動を確認します。
+
+```sql
+-- 既存のインデックスを削除
+DROP INDEX IF EXISTS idx_orders_shop_shipped;
+
+-- 両方のカラムに単一インデックスを作成
+CREATE INDEX idx_orders_shipped_date_single ON orders(shipped_date);
+CREATE INDEX idx_orders_shop_id_single ON orders(shop_id);
+ANALYZE orders;
+```
+
+ステップ3と同じクエリ（LIMIT付き）を実行:
+
+```sql
+EXPLAIN ANALYZE
+SELECT
+  shipped_date,
+  shop_id,
+  COUNT(*) as order_count,
+  SUM(total_amount) as total_sales
+FROM orders
+WHERE shipped_date = CURRENT_DATE
+GROUP BY shipped_date, shop_id
+ORDER BY shipped_date, shop_id
+LIMIT 10;
+```
+
+**実際の結果（検証済み）:**
+
+```
+Limit  (cost=0.43..215.09 rows=10 width=24) (actual time=243.503..1144.375 rows=10 loops=1)
+  ->  GroupAggregate  (cost=0.43..244577.68 rows=11394 width=24) (actual time=243.502..1144.365 rows=10 loops=1)
+        Group Key: shipped_date, shop_id
+        ->  Index Scan using idx_orders_shop_id_single on orders  (cost=0.43..244327.34 rows=13640 width=12) (actual time=0.034..1144.158 rows=2001 loops=1)
+              Filter: (shipped_date = CURRENT_DATE)
+              Rows Removed by Filter: 498000
+Planning Time: 0.248 ms
+Execution Time: 1144.415 ms
+```
+
+実行時間: **約1144ms（約1.1秒）**
+
+**驚きの結果:**
+- ❌ **Index Scan using idx_orders_shop_id_single**: オプティマイザが間違ったインデックスを選択！
+- ❌ **Rows Removed by Filter: 498,000**: 大量の行をフィルタで除外（非常に非効率）
+- ⚠️ **GroupAggregate**: GROUP BYのためにGroupAggregateは使われるが...
+- ❌ **実行時間が非常に遅い**: 複合インデックス（1.1ms）の1000倍以上遅い
+
+**なぜオプティマイザは間違った判断をしたのか？**
+
+PostgreSQLのオプティマイザは、以下の理由でshop_idのインデックスを選択しました：
+
+1. **GROUP BY (shipped_date, shop_id)** の2番目のカラムがshop_id
+2. shop_idでソート済みのデータを読めば、GroupAggregateが使える
+3. GroupAggregateはメモリ効率が良い（ハッシュテーブル不要）
+
+しかし、この判断は**コスト見積もりの誤り**でした：
+- shop_idでスキャンすると、500,000行（各shop_id約5,000行）を読む必要がある
+- その後、shipped_dateでフィルタして498,000行を除外
+- 結果的に、2,000行を取得するために500,000行をスキャンする羽目に
+
+**shipped_dateのインデックスのみの場合（検証）:**
+
+shop_idのインデックスを削除して、shipped_dateのインデックスのみで試してみると：
+
+```sql
+DROP INDEX idx_orders_shop_id_single;
+
+EXPLAIN ANALYZE
+-- 同じクエリ
+```
+
+```
+Limit  (cost=25759.52..25759.55 rows=10 width=24) (actual time=5.770..5.773 rows=10 loops=1)
+  ->  Sort  (cost=25759.52..25787.98 rows=11382 width=24) (actual time=5.770..5.771 rows=10 loops=1)
+        Sort Key: shop_id
+        Sort Method: top-N heapsort  Memory: 26kB
+        ->  HashAggregate  (cost=25399.74..25513.56 rows=11382 width=24) (actual time=5.675..5.732 rows=100 loops=1)
+              Group Key: shipped_date, shop_id
+              Batches: 1  Memory Usage: 417kB
+              ->  Bitmap Heap Scan on orders  (cost=154.01..25263.52 rows=13622 width=12) (actual time=0.464..3.154 rows=20000 loops=1)
+                    Recheck Cond: (shipped_date = CURRENT_DATE)
+                    Heap Blocks: exact=128
+                    ->  Bitmap Index Scan on idx_orders_shipped_date_single  (cost=0.00..150.60 rows=13622 width=0) (actual time=0.448..0.448 rows=20000 loops=1)
+                          Index Cond: (shipped_date = CURRENT_DATE)
+Planning Time: 0.617 ms
+Execution Time: 5.969 ms
+```
+
+実行時間: **約5.9ms**（両方のインデックスがある場合の約200倍高速！）
+
+**複合インデックス（ステップ3）との比較:**
+
+| 項目 | 単一インデックス×2 | shipped_dateのみ | 複合インデックス |
+|------|------------------|-----------------|---------------|
+| 使用インデックス | shop_id（誤選択） | shipped_date | (shipped_date, shop_id) |
+| スキャン方法 | Index Scan | Bitmap Heap Scan | Index Scan |
+| 集計方法 | GroupAggregate | HashAggregate | GroupAggregate |
+| ソート | 不要（shop_id順） | 必要（top-N） | 不要（複合順） |
+| Rows Removed | 498,000行！ | 0行 | 0行 |
+| LIMIT早期終了 | できるが非効率 | 不可 | 可能 |
+| 実行時間 | **約1144ms** | 約5.9ms | **約1.1ms** |
+
+**重要な発見:**
+
+1. **単一インデックス×2は逆効果になる場合がある**
+   - オプティマイザがGROUP BYを優先してshop_idのインデックスを選択
+   - WHERE句のフィルタが非効率的になり、大量の行をスキャン
+   - 結果的に、インデックスなしよりも遅くなる可能性がある
+
+2. **shipped_dateのインデックスのみの方が効率的**
+   - WHERE句で効率的に絞り込み（20,000行のみスキャン）
+   - HashAggregateでメモリ効率良く集計
+   - 実行時間は約5.9ms（十分高速）
+
+3. **複合インデックスが最も効率的**
+   - WHERE句とGROUP BYの両方に最適化
+   - LIMIT早期終了が可能
+   - 実行時間は約1.1ms（最速）
+
+**実務での教訓:**
+
+- ❌ 「インデックスは多ければ多いほど良い」は**誤り**
+- ❌ 単一インデックスを複数作れば複合インデックスの代わりになる、は**誤り**
+- ✅ クエリパターンに応じて**適切な複合インデックス**を設計する
+- ✅ 不要なインデックスはオプティマイザを混乱させる原因になる
+- ✅ EXPLAIN ANALYZEで実際の実行計画を確認することが重要
+
+### ステップ7: 正しいインデックスに戻す
 
 検証後、正しいインデックスに戻しておきます。
 
 ```sql
+-- 単一インデックスを削除
+DROP INDEX IF EXISTS idx_orders_shipped_date_single;
+DROP INDEX IF EXISTS idx_orders_shop_id_single;
+
 -- 正しい順序の複合インデックスを再作成
-DROP INDEX idx_orders_shop_shipped;
 CREATE INDEX idx_orders_shipped_shop ON orders(shipped_date, shop_id);
 ANALYZE orders;
 ```
 
 ## 実行計画の比較まとめ
 
-| ステップ | クエリパターン | スキャン方法 | 集計方法 | ソート | 実行時間 | 処理行数 |
-|---------|---------------|-------------|---------|--------|---------|---------|
-| 1 | インデックスなし | Seq Scan | HashAggregate | Sort必要 | 約150ms | 5,000,000行 |
-| 2 | shipped_dateのみ | Bitmap Scan | HashAggregate | Sort必要 | 約13ms | 20,000行 |
-| 3 | **(shipped_date, shop_id) + LIMIT 10** | **Index Scan** | **GroupAggregate** | **不要** | **約1.1ms** | **約2,001行** |
-| 4 | (shipped_date, shop_id) + LIMITなし | Bitmap Scan | HashAggregate | Sort必要 | 約7.4ms | 20,000行 |
-| 5 | (shop_id, shipped_date) + GROUP BY shipped_date, shop_id | Seq Scan | HashAggregate | Sort必要 | 約150ms | 5,000,000行 |
+| ステップ | クエリパターン | スキャン方法 | 集計方法 | ソート | 実行時間 | 処理行数 | Rows Removed |
+|---------|---------------|-------------|---------|--------|---------|---------|--------------|
+| 1 | インデックスなし | Seq Scan | HashAggregate | Sort必要 | 約150ms | 5,000,000行 | 4,980,000行 |
+| 2 | shipped_dateのみ | Bitmap Scan | HashAggregate | Sort必要 | 約13ms | 20,000行 | 0行 |
+| 3 | **(shipped_date, shop_id) + LIMIT 10** | **Index Scan** | **GroupAggregate** | **不要** | **約1.1ms** | **約2,001行** | **0行** |
+| 4 | (shipped_date, shop_id) + LIMITなし | Bitmap Scan | HashAggregate | Sort必要 | 約7.4ms | 20,000行 | 0行 |
+| 5 | (shop_id, shipped_date) + GROUP BY shipped_date, shop_id | Seq Scan | HashAggregate | Sort必要 | 約150ms | 5,000,000行 | 4,980,000行 |
+| 6 | shipped_date単一 + shop_id単一 + LIMIT 10 | Index Scan (shop_id) | GroupAggregate | 不要 | **約1144ms** | 500,000行 | **498,000行** |
 
 **重要な発見:**
 - ステップ3が最も効率的（Index Scan + GroupAggregate + 早期終了）
-- **LIMITがあると早期終了が可能**で、GroupAggregateが選ばれる
+- **LIMITがあると早期終了が可能**で、GroupAggregateが選ばれる（複合インデックスの場合のみ）
 - **GROUP BYの順序がインデックスと一致**していることが必須
 - LIMITなし（ステップ4）ではBitmap Scan + HashAggregateの方が効率的
 - カラム順序が逆だと、WHERE句での絞り込みが非効率（ステップ5）
+- **単一インデックス×2はむしろ逆効果**（ステップ6）
+  - オプティマイザがshop_idのインデックスを誤選択
+  - 498,000行をフィルタで除外する非効率的な実行計画
+  - 複合インデックス（1.1ms）の1000倍以上遅い（1144ms）
+  - **「インデックスは多ければ良い」は誤り**の実例
 
 ## 学習ポイント
 
