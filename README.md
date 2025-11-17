@@ -169,6 +169,11 @@ cat init-db-templates/nested-loop-test/README.md
   - 必要なカラムのみを選択する重要性
   - テーブル設計におけるBLOB分離のベストプラクティス
 
+- **[join-index-test](init-db-templates/join-index-test/README.md)**: JOINでのインデックスの効果検証
+  - 外部キー（stock.product_id）にインデックスを追加することで4.7倍高速化
+  - JOINの順序がインデックスによって変わる仕組み
+  - 複合インデックスでwarehouse_idもIndex Condで処理可能に
+
 ### 新しいテストケースの追加
 
 `init-db-templates/` ディレクトリに新しいディレクトリを作成します：
