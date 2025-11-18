@@ -174,6 +174,12 @@ cat init-db-templates/nested-loop-test/README.md
   - JOINの順序がインデックスによって変わる仕組み
   - 複合インデックスでwarehouse_idもIndex Condで処理可能に
 
+- **[between-index-test](init-db-templates/between-index-test/README.md)**: BETWEEN句とインデックスの効果検証
+  - BETWEEN検索でのインデックス活用（約240倍の高速化）
+  - 範囲の広さによる実行計画の変化（Index Scan → Seq Scan）
+  - 複合インデックスでの最適化（3.8倍の高速化）
+  - 時系列データでの効率的な範囲検索
+
 ### 新しいテストケースの追加
 
 `init-db-templates/` ディレクトリに新しいディレクトリを作成します：
